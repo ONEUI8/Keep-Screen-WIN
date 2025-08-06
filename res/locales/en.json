@@ -1,0 +1,10 @@
+{
+    "keep_screen_on": "Keep Screen On",
+    "duration": "Duration",
+    "permanent": "Always",
+    "minutes_15": "15 Minutes",
+    "minutes_30": "30 Minutes",
+    "hour_1": "1 Hour",
+    "hours_2": "2 Hours",
+    "exit_app": "Exit"
+}

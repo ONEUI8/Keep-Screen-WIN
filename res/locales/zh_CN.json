@@ -1,0 +1,10 @@
+{
+    "keep_screen_on": "保持亮屏",
+    "duration": "保持时间",
+    "permanent": "始终",
+    "minutes_15": "15 分钟",
+    "minutes_30": "30 分钟",
+    "hour_1": "1 小时",
+    "hours_2": "2 小时",
+    "exit_app": "退出应用"
+}

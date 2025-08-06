@@ -1,0 +1,109 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            artifact_name: keep-screen-x86_64
+            arch: x86_64
+          - target: aarch64-pc-windows-msvc
+            artifact_name: keep-screen-aarch64
+            arch: aarch64
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        target: ${{ matrix.target }}
+
+    - name: Cache Cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Get package version
+      id: version
+      shell: bash
+      run: |
+        VERSION=$(grep '^version' Cargo.toml | head -n 1 | cut -d '"' -f 2)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Build with xtask
+      run: cargo run --package xtask -- --target ${{ matrix.target }}
+
+    - name: Upload executable as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.artifact_name }}-${{ steps.version.outputs.version }}
+        path: target/${{ matrix.target }}/release/Keep Screen.exe
+
+  release:
+    runs-on: windows-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+    - name: Generate tag and release name
+      id: tag
+      shell: bash
+      run: |
+        VERSION=${{ needs.build.outputs.version }}
+        TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+        TAG_NAME="v$VERSION-nightly-$TIMESTAMP"
+        RELEASE_NAME="Auto Build $TIMESTAMP (v$VERSION)"
+        echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+        echo "release_name=$RELEASE_NAME" >> $GITHUB_OUTPUT
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts/
+
+    - name: Package artifacts for release
+      shell: pwsh
+      run: |
+        $VERSION = "${{ needs.build.outputs.version }}"
+        New-Item -ItemType Directory -Force -Path release_assets
+
+        # x86_64
+        $x64_dir = "artifacts/keep-screen-x86_64-$VERSION"
+        $x64_exe = "$x64_dir/Keep Screen.exe"
+        $x64_zip = "release_assets/Keep-Screen-v$VERSION-x86_64-windows.zip"
+        Compress-Archive -Path $x64_exe -DestinationPath $x64_zip
+
+        # aarch64
+        $arm64_dir = "artifacts/keep-screen-aarch64-$VERSION"
+        $arm64_exe = "$arm64_dir/Keep Screen.exe"
+        $arm64_zip = "release_assets/Keep-Screen-v$VERSION-aarch64-windows.zip"
+        Compress-Archive -Path $arm64_exe -DestinationPath $arm64_zip
+
+    - name: Create GitHub Release
+      uses: ncipollo/release-action@v1
+      with:
+        artifacts: "release_assets/*.zip"
+        tag: ${{ steps.tag.outputs.tag_name }}
+        name: ${{ steps.tag.outputs.release_name }}
+        token: ${{ secrets.GITHUB_TOKEN }}
