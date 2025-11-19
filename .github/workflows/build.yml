@@ -55,10 +55,12 @@ jobs:
         name: ${{ matrix.artifact_name }}-${{ steps.version.outputs.version }}
         path: target/${{ matrix.target }}/release/Keep Screen.exe
 
+
   release:
     runs-on: windows-latest
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # 手动触发时自动发布 Release
+    if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
 
