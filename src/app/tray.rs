@@ -1,25 +1,22 @@
-//! Handles the system tray icon and menu logic.
+//! 系统托盘图标和菜单逻辑
 
 use super::i18n::Translations;
 use super::state::{AppState, DurationOption, Event, DURATION_OPTIONS};
 use super::timer::{start_timer_thread, stop_timer_thread};
-use super::win_api::set_keep_awake;
+use super::win_api::{set_keep_awake, set_theme_change_callback};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use trayicon::{Icon, MenuBuilder, MenuItem, TrayIconBuilder};
 
-/// Builds the tray menu UI based on the current application state.
+/// 构建菜单UI
 fn build_menu(
     is_active: bool,
     current_duration: DurationOption,
     t: &Translations,
 ) -> MenuBuilder<Event> {
     let mut menu = MenuBuilder::new();
-
-    // Main checkable item to toggle the keep-awake functionality.
     menu = menu.checkable(&t.get("keep_screen_on"), is_active, Event::ToggleActive);
 
-    // Submenu for selecting the duration.
     let mut duration_submenu = MenuBuilder::new();
     for &duration_opt in DURATION_OPTIONS {
         duration_submenu = duration_submenu.checkable(
@@ -30,30 +27,43 @@ fn build_menu(
     }
     
     menu = menu.with(MenuItem::Submenu {
-        name: t.get("duration").into(),
+        name: t.get("duration"),
         children: duration_submenu,
-        disabled: !is_active, // Disable duration selection when not active.
+        disabled: !is_active,
         id: Some(Event::NoOp),
         icon: None,
     });
 
-    // Exit button.
     menu = menu.separator().item(&t.get("exit_app"), Event::Exit);
     menu
 }
 
-/// Creates the tray icon and runs the event loop in a separate thread.
+/// 创建托盘图标并运行事件循环
 pub fn run_tray_event_loop(app_state: Arc<Mutex<AppState>>) {
     let (event_tx, event_rx) = crossbeam_channel::unbounded();
     let event_tx_clone = event_tx.clone();
 
-    let icon = Icon::from_buffer(include_bytes!("../../res/tray.ico"), None, None).unwrap();
+    // 设置主题变化回调，当系统主题变化时发送 ThemeChanged 事件
+    set_theme_change_callback(event_tx.clone());
 
-    // The tray_icon object must be mutable to update its menu.
+    let icon = match Icon::from_buffer(include_bytes!("../../res/tray.ico"), None, None) {
+        Ok(icon) => icon,
+        Err(e) => {
+            eprintln!("加载托盘图标失败: {}", e);
+            return;
+        }
+    };
+
     let mut tray_icon = {
-        let state = app_state.lock().unwrap();
+        let state = match app_state.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                eprintln!("获取应用状态锁失败: {}", e);
+                return;
+            }
+        };
         let menu = build_menu(state.is_active, state.duration, &state.translations);
-        TrayIconBuilder::new()
+        match TrayIconBuilder::new()
             .sender(move |e| { let _ = event_tx_clone.send(*e); })
             .icon(icon)
             .tooltip("Keep Screen")
@@ -61,26 +71,35 @@ pub fn run_tray_event_loop(app_state: Arc<Mutex<AppState>>) {
             .on_right_click(Event::ShowMenu)
             .menu(menu)
             .build()
-            .unwrap()
+        {
+            Ok(icon) => icon,
+            Err(e) => {
+                eprintln!("构建托盘图标失败: {}", e);
+                return;
+            }
+        }
     };
-    
+
     let event_handler_state = Arc::clone(&app_state);
     thread::spawn(move || {
-        // Initial call to `set_keep_awake` to activate on startup.
-        // This must be done in the same thread as subsequent calls.
-        println!("[DEBUG] Event thread started, activating keep-awake by default.");
+        // 初始调用，确保和后续调用在同一线程
         set_keep_awake(true);
 
         event_rx.iter().for_each(|event| {
-            // `ShowMenu` is handled directly by the tray icon library, so we filter it out.
             if event != Event::ShowMenu {
-                let mut state = event_handler_state.lock().unwrap();
-                println!("[DEBUG] Received event: {:?}", event);
+                let mut state = match event_handler_state.lock() {
+                    Ok(guard) => guard,
+                    Err(e) => {
+                        eprintln!("获取应用状态锁失败: {}", e);
+                        return;
+                    }
+                };
 
+                let mut needs_menu_update = true;
+                
                 match event {
                     Event::ToggleActive => {
                         state.is_active = !state.is_active;
-                        println!("[DEBUG] Toggled active state to: {}", state.is_active);
                         set_keep_awake(state.is_active);
 
                         if state.is_active {
@@ -91,28 +110,32 @@ pub fn run_tray_event_loop(app_state: Arc<Mutex<AppState>>) {
                     }
                     Event::SetDuration(new_duration) => {
                         state.duration = new_duration;
-                        println!("[DEBUG] Set duration to: {:?}", new_duration);
-                        // Restart the timer with the new duration if active.
                         if state.is_active {
                             stop_timer_thread(&mut state);
                             start_timer_thread(&mut state, event_tx.clone());
                         }
                     }
+                    Event::ThemeChanged => {
+                        // ThemeChanged 已经需要更新菜单
+                    }
                     Event::Exit => {
-                        println!("[DEBUG] Exiting application...");
-                        set_keep_awake(false); // Clean up by restoring default system behavior.
+                        set_keep_awake(false);
                         std::process::exit(0);
                     }
-                    Event::NoOp => {} // Do nothing for submenu parent.
-                    Event::ShowMenu => unreachable!(), // Already filtered out.
+                    Event::NoOp => {
+                        needs_menu_update = false;
+                    }
+                    Event::ShowMenu => unreachable!(),
                 }
-                
-                // Rebuild the menu to reflect the new state and update the tray icon.
-                let new_menu = build_menu(state.is_active, state.duration, &state.translations);
-                tray_icon.set_menu(&new_menu).unwrap();
+
+                // 只在需要时更新菜单
+                if needs_menu_update {
+                    let new_menu = build_menu(state.is_active, state.duration, &state.translations);
+                    if let Err(e) = tray_icon.set_menu(&new_menu) {
+                        eprintln!("更新托盘菜单失败: {}", e);
+                    }
+                }
             } else {
-                println!("[DEBUG] Received event: ShowMenu");
-                // Manually show the menu on left-click (or right-click).
                 let _ = tray_icon.show_menu();
             }
         })
