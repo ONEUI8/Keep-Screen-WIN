@@ -1,10 +1,14 @@
 //! Windows 暗色模式支持
+//!
+//! 这个模块实现了 Windows 10 1809+ 的暗色模式检测和监听功能。
+//! 使用了未文档化的 uxtheme.dll API（通过序号调用）。
 
 use std::sync::{Arc, Mutex};
 use winapi::shared::minwindef::{BOOL, DWORD, FALSE, TRUE};
 use winapi::shared::windef::HWND;
 use winapi::um::libloaderapi::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 
+/// PreferredAppMode 枚举（Windows 10 1903+）
 #[repr(i32)]
 #[allow(dead_code)]
 enum PreferredAppMode {
@@ -15,6 +19,7 @@ enum PreferredAppMode {
     Max = 4,
 }
 
+/// 函数指针类型定义
 type FnShouldAppsUseDarkMode = unsafe extern "system" fn() -> BOOL;
 type FnAllowDarkModeForWindow = unsafe extern "system" fn(HWND, BOOL) -> BOOL;
 type FnAllowDarkModeForApp = unsafe extern "system" fn(BOOL) -> BOOL;
@@ -65,7 +70,7 @@ impl DarkModeManager {
             }
 
             // 获取版本号
-            let rtl_get_version = GetProcAddress(ntdll, b"RtlGetNtVersionNumbers\0".as_ptr() as *const i8);
+            let rtl_get_version = GetProcAddress(ntdll, c"RtlGetNtVersionNumbers".as_ptr());
             if rtl_get_version.is_null() {
                 return;
             }
@@ -96,31 +101,31 @@ impl DarkModeManager {
             // 通过序号获取函数（未文档化的 API）
             // ordinal 104: RefreshImmersiveColorPolicyState
             if let Some(ptr) = Self::get_proc_by_ordinal(uxtheme, 104) {
-                self.refresh_immersive_color_policy = Some(std::mem::transmute(ptr));
+                self.refresh_immersive_color_policy = Some(std::mem::transmute::<*const (), unsafe extern "system" fn()>(ptr));
             }
 
             // ordinal 132: ShouldAppsUseDarkMode
             if let Some(ptr) = Self::get_proc_by_ordinal(uxtheme, 132) {
-                self.should_apps_use_dark_mode = Some(std::mem::transmute(ptr));
+                self.should_apps_use_dark_mode = Some(std::mem::transmute::<*const (), unsafe extern "system" fn() -> i32>(ptr));
             }
 
             // ordinal 133: AllowDarkModeForWindow
             if let Some(ptr) = Self::get_proc_by_ordinal(uxtheme, 133) {
-                self.allow_dark_mode_for_window = Some(std::mem::transmute(ptr));
+                self.allow_dark_mode_for_window = Some(std::mem::transmute::<*const (), unsafe extern "system" fn(*mut winapi::shared::windef::HWND__, i32) -> i32>(ptr));
             }
 
             // ordinal 135: AllowDarkModeForApp (1809) 或 SetPreferredAppMode (1903+)
             if let Some(ptr) = Self::get_proc_by_ordinal(uxtheme, 135) {
                 if self.build_number < 18362 {
-                    self.allow_dark_mode_for_app = Some(std::mem::transmute(ptr));
+                    self.allow_dark_mode_for_app = Some(std::mem::transmute::<*const (), unsafe extern "system" fn(i32) -> i32>(ptr));
                 } else {
-                    self.set_preferred_app_mode = Some(std::mem::transmute(ptr));
+                    self.set_preferred_app_mode = Some(std::mem::transmute::<*const (), unsafe extern "system" fn(i32) -> i32>(ptr));
                 }
             }
 
             // ordinal 136: FlushMenuThemes
             if let Some(ptr) = Self::get_proc_by_ordinal(uxtheme, 136) {
-                self.flush_menu_themes = Some(std::mem::transmute(ptr));
+                self.flush_menu_themes = Some(std::mem::transmute::<*const (), unsafe extern "system" fn()>(ptr));
             }
 
             // 检查是否所有必要的函数都已加载
@@ -181,7 +186,11 @@ impl DarkModeManager {
         unsafe {
             if let Some(should_use_dark) = self.should_apps_use_dark_mode {
                 let is_dark = should_use_dark() != FALSE && !self.is_high_contrast();
-                *self.enabled.lock().unwrap() = is_dark;
+                if let Ok(mut enabled) = self.enabled.lock() {
+                    *enabled = is_dark;
+                } else {
+                    eprintln!("获取暗色模式状态锁失败");
+                }
             }
         }
     }
