@@ -1,18 +1,19 @@
-//! Defines the application's state.
+//! 应用的状态定义模块
 
 use super::i18n::{self, Translations};
 
-/// Enum representing events triggered by the tray menu.
+/// 菜单事件的枚举
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum Event {
     ShowMenu,
     ToggleActive,
     SetDuration(DurationOption),
+    ThemeChanged, // 系统主题变化
     Exit,
-    NoOp, // A no-operation event, used for parent menu items.
+    NoOp, // 空操作事件
 }
 
-/// Enum for the selectable duration options.
+/// 可选的持续时间
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum DurationOption {
     Permanent,
@@ -20,15 +21,13 @@ pub enum DurationOption {
 }
 
 impl DurationOption {
-    /// Converts the duration into seconds. Returns `None` for `Permanent`.
-    pub fn to_seconds(&self) -> Option<u64> {
+    pub fn to_seconds(self) -> Option<u64> {
         match self {
             DurationOption::Permanent => None,
-            DurationOption::Minutes(m) => Some(*m as u64 * 60),
+            DurationOption::Minutes(m) => Some(m as u64 * 60),
         }
     }
 
-    /// Gets the localized display text for the duration option.
     pub fn display_text(&self, t: &Translations) -> String {
         match self {
             DurationOption::Permanent => t.get("permanent"),
@@ -41,7 +40,6 @@ impl DurationOption {
     }
 }
 
-/// A constant list of all available duration options.
 pub const DURATION_OPTIONS: &[DurationOption] = &[
     DurationOption::Permanent,
     DurationOption::Minutes(15),
@@ -50,7 +48,7 @@ pub const DURATION_OPTIONS: &[DurationOption] = &[
     DurationOption::Minutes(120),
 ];
 
-/// Holds the application's current runtime state.
+/// 保存应用当前状态的结构体
 pub struct AppState {
     pub is_active: bool,
     pub duration: DurationOption,
@@ -59,10 +57,9 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Creates a new `AppState` with default values.
     pub fn new() -> Self {
         AppState {
-            is_active: true, // App is active by default.
+            is_active: true, // 默认开启
             duration: DurationOption::Permanent,
             translations: i18n::load(),
             timer_shutdown_tx: None,
