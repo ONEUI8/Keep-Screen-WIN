@@ -22,7 +22,13 @@ pub fn set_theme_change_callback(sender: Sender<Event>) {
 
 /// 创建一个命名互斥锁以确保只有一个实例在运行。
 pub fn create_single_instance_mutex() -> bool {
-    let mutex_name = CString::new("KeepScreenAppMutex").unwrap();
+    let mutex_name = match CString::new("KeepScreenAppMutex") {
+        Ok(name) => name,
+        Err(e) => {
+            eprintln!("创建互斥锁名称失败: {}", e);
+            return false;
+        }
+    };
     let mutex_handle = unsafe {
         let handle = synchapi::CreateMutexA(std::ptr::null_mut(), 0, mutex_name.as_ptr());
         if handle.is_null() {
@@ -34,7 +40,8 @@ pub fn create_single_instance_mutex() -> bool {
         }
         handle
     };
-    let _ = Box::new(mutex_handle);
+    // 保持 mutex 存活，防止内存泄漏
+    let _ = Box::leak(Box::new(mutex_handle));
     true
 }
 
@@ -87,13 +94,12 @@ unsafe fn create_message_window() -> HWND {
         lpszClassName: class_name.as_ptr(),
     };
 
-    // SAFETY: 注册窗口类
+    // SAFETY: 注册窗口类 - 必须在 unsafe 块中调用
     unsafe {
+        // 注册窗口类
         winuser::RegisterClassW(&wc);
-    }
 
-    // SAFETY: 创建消息窗口
-    let hwnd = unsafe {
+        // 创建消息窗口
         winuser::CreateWindowExW(
             0,
             class_name.as_ptr(),
@@ -108,9 +114,7 @@ unsafe fn create_message_window() -> HWND {
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         )
-    };
-
-    hwnd
+    }
 }
 
 /// 消息窗口过程
@@ -125,13 +129,13 @@ unsafe extern "system" fn message_window_proc(
             // 处理系统设置变化消息
             if darkmode::handle_setting_change(lparam) {
                 // 通知应用主题已变化
+                // SAFETY: 访问静态变量
                 unsafe {
                     let ptr = std::ptr::addr_of!(THEME_CHANGE_CALLBACK);
-                    if let Some(ref callback) = *ptr {
-                        if let Ok(sender) = callback.lock() {
+                    if let Some(ref callback) = *ptr
+                        && let Ok(sender) = callback.lock() {
                             let _ = sender.send(Event::ThemeChanged);
                         }
-                    }
                 }
             }
             0
